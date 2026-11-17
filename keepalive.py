@@ -50,9 +50,6 @@ def main():
         )
         page = context.new_page()
         stealth_sync(page)
-        
-        # 定义 panel_page 变量，用于捕获弹出的新标签页
-        panel_page = None
 
         try:
             # 1. 访问并登录
@@ -79,41 +76,31 @@ def main():
             manage_btn.wait_for(state="visible", timeout=15000)
             manage_btn.click()
 
-            # 4. 等待进入服务详情页，并准备捕获新标签页
+            # 4. 等待进入服务详情页，直接在当前页面点击
             print("等待进入服务详情页...")
             open_panel_btn = page.locator('a:has-text("Open Server Panel"), button:has-text("Open Server Panel")').first
             open_panel_btn.wait_for(state="visible", timeout=30000)
             
-            print("点击 Open Server Panel 并监听新标签页弹出...")
-            # 关键修改：告诉 Playwright 这里会弹出一个新标签页，并获取它
-            with context.expect_page() as new_page_info:
-                open_panel_btn.click()
+            print("点击 Open Server Panel (当前页跳转)...")
+            open_panel_btn.click()
             
-            # 拿到这个新弹出的页面句柄（面板页）
-            panel_page = new_page_info.value
-            
-            # 5. 在【新标签页】中等待最终的 Console 面板出现
+            # 5. 直接在【当前页】等待最终的 Console 面板出现
             print("等待加载 Console 面板...")
-            console_tag = panel_page.locator('text="CONSOLE"').first
+            console_tag = page.locator('text="CONSOLE"').first
             console_tag.wait_for(state="visible", timeout=30000)
             
             # 缓冲 5 秒，确保 CPU、内存等图表数据完整渲染完毕
             time.sleep(5) 
             print("🎉 成功进入最终服务器面板！")
 
-            # 6. 在【新标签页】截图保存并发送 TG
+            # 6. 截图保存并发送 TG
             screenshot_path = "vortexa_success.png"
-            panel_page.screenshot(path=screenshot_path, full_page=True)
-            send_tg_photo("✅ Vortexa 服务器保活成功！已成功进入 Server Panel，详情见截图。", screenshot_path)
+            page.screenshot(path=screenshot_path, full_page=True)
+            send_tg_photo("✅ Vortexa 服务器自动保活成功！详情见截图。", screenshot_path)
 
         except Exception as e:
             error_screenshot = "error.png"
-            # 错误处理逻辑升级：如果在面板页崩溃，就截面板页；如果在主页崩溃，就截主页
-            if panel_page and not panel_page.is_closed():
-                panel_page.screenshot(path=error_screenshot, full_page=True)
-            else:
-                page.screenshot(path=error_screenshot, full_page=True)
-                
+            page.screenshot(path=error_screenshot, full_page=True)
             error_msg = f"❌ Vortexa 保活执行失败：\n{str(e)}"
             print(error_msg)
             send_tg_photo(error_msg, error_screenshot)
