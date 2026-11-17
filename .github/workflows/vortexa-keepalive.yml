@@ -2,9 +2,8 @@ name: Vortexa Auto Keep-Alive
 
 on:
   schedule:
-    # 每 3 天执行一次 (UTC时间 08:00，北京时间 16:00)
     - cron: '0 8 */3 * *'
-  workflow_dispatch: # 允许在 GitHub 网页上手动触发测试
+  workflow_dispatch:
 
 jobs:
   run-keep-alive:
@@ -25,11 +24,29 @@ jobs:
         pip install -r requirements.txt
         playwright install chromium
 
+    - name: Setup Sing-box Proxy
+      env:
+        PROXY_URL: ${{ secrets.PROXY_URL }}
+      run: |
+        if [ -n "$PROXY_URL" ]; then
+          echo "检测到 PROXY_URL，正在配置 Sing-box 代理..."
+          # 下载之前好用的通用代理配置脚本
+          curl -sL https://main.ssss.nyc.mn/setup_proxy.sh -o setup_proxy.sh
+          chmod +x setup_proxy.sh
+          # 后台运行脚本并传入节点链接，默认会在 127.0.0.1:2080 开启 socks5
+          bash setup_proxy.sh "$PROXY_URL"
+          echo "PROXY_SERVER=socks5://127.0.0.1:2080" >> $GITHUB_ENV
+          sleep 5
+        else
+          echo "未配置 PROXY_URL，将使用直连。"
+        fi
+
     - name: Run Keep-Alive Script
       env:
         VORTEXA_EMAIL: ${{ secrets.VORTEXA_EMAIL }}
         VORTEXA_PASSWORD: ${{ secrets.VORTEXA_PASSWORD }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        PROXY_SERVER: ${{ env.PROXY_SERVER }}
       run: |
         python keepalive.py
