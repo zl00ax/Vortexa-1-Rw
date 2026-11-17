@@ -24,21 +24,88 @@ jobs:
         pip install -r requirements.txt
         playwright install chromium
 
-    - name: Setup Sing-box Proxy
+    - name: Start Xray Proxy
       env:
         PROXY_URL: ${{ secrets.PROXY_URL }}
       run: |
-        if [ -n "$PROXY_URL" ]; then
-          echo "检测到 PROXY_URL，正在配置 Sing-box 代理..."
-          # 下载之前好用的通用代理配置脚本
-          curl -sL https://main.ssss.nyc.mn/setup_proxy.sh -o setup_proxy.sh
-          chmod +x setup_proxy.sh
-          # 后台运行脚本并传入节点链接，默认会在 127.0.0.1:2080 开启 socks5
-          bash setup_proxy.sh "$PROXY_URL"
-          echo "PROXY_SERVER=socks5://127.0.0.1:2080" >> $GITHUB_ENV
-          sleep 5
-        else
+        if [ -z "$PROXY_URL" ]; then
           echo "未配置 PROXY_URL，将使用直连。"
+          exit 0
+        fi
+
+        echo "正在解析 VLESS Reality 链接并生成 Xray 配置..."
+        python -c "
+        import urllib.parse, json, os, sys
+        url = os.environ.get('PROXY_URL', '').strip()
+        if not url.startswith('vless://'):
+            print('❌ 目前代理环境配置仅支持 vless:// 协议！')
+            sys.exit(1)
+
+        parsed = urllib.parse.urlparse(url)
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+
+        config = {
+            'inbounds': [{
+                'port': 2080,
+                'listen': '127.0.0.1',
+                'protocol': 'socks',
+                'settings': {'udp': True}
+            }],
+            'outbounds': [{
+                'protocol': 'vless',
+                'settings': {
+                    'vnext': [{
+                        'address': parsed.hostname,
+                        'port': int(parsed.port),
+                        'users': [{
+                            'id': parsed.username,
+                            'encryption': params.get('encryption', 'none'),
+                            'flow': params.get('flow', '')
+                        }]
+                    }]
+                },
+                'streamSettings': {
+                    'network': params.get('type', 'tcp'),
+                    'security': params.get('security', 'none')
+                }
+            }]
+        }
+
+        # 针对 Reality 节点的特殊参数处理
+        if params.get('security') == 'reality':
+            config['outbounds'][0]['streamSettings']['realitySettings'] = {
+                'serverName': params.get('sni', ''),
+                'fingerprint': params.get('fp', 'chrome'),
+                'publicKey': params.get('pbk', ''),
+                'shortId': params.get('sid', ''),
+                'spiderX': params.get('spx', '')
+            }
+
+        with open('config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+        "
+        
+        if [ $? -ne 0 ]; then
+            echo "❌ 代理配置生成失败，请检查 PROXY_URL 格式。"
+            exit 1
+        fi
+
+        echo "下载并启动 Xray-core..."
+        wget -qO xray.zip https://github.com/XTLS/Xray-core/releases/download/v1.8.8/Xray-linux-64.zip
+        unzip -q xray.zip -d xray-bin
+        chmod +x xray-bin/xray
+        # 后台运行 Xray 并在端口 2080 开启 socks5 代理
+        nohup ./xray-bin/xray -c config.json > xray.log 2>&1 &
+        sleep 3
+
+        echo "测试代理连通性..."
+        if curl -s --socks5 127.0.0.1:2080 https://cloudflare.com/cdn-cgi/trace | grep -q "ip="; then
+            echo "✅ Xray 代理启动成功并已连通外网！"
+            echo "PROXY_SERVER=socks5://127.0.0.1:2080" >> $GITHUB_ENV
+        else
+            echo "❌ 代理连通性测试失败，节点可能已失效或配置错误。"
+            cat xray.log
+            exit 1
         fi
 
     - name: Run Keep-Alive Script
