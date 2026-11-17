@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import requests
 from playwright.sync_api import sync_playwright
@@ -39,7 +40,7 @@ def main():
     
     launch_opts = {"headless": True, "args": launch_args}
     if PROXY_SERVER:
-        print(f"🚀 启用代理服务器: {PROXY_SERVER}")
+        print(f"🚀 启用代理服务器: {PROXY_SERVER}", flush=True)
         launch_opts["proxy"] = {"server": PROXY_SERVER}
 
     with sync_playwright() as p:
@@ -53,56 +54,75 @@ def main():
 
         try:
             # 1. 访问并登录
-            print("正在访问 Vortexa 登录页面...")
+            print("正在访问 Vortexa 登录页面...", flush=True)
             page.goto("https://vortexa.cloud/login", timeout=60000)
             page.wait_for_load_state("networkidle")
 
-            print("输入账号密码并登录...")
+            print("输入账号密码并登录...", flush=True)
             page.locator('input[type="email"]').fill(EMAIL)
             page.locator('input[type="password"]').fill(PASSWORD)
             page.get_by_role("button", name="Sign In").click()
             
             page.wait_for_url("**/dashboard**", timeout=45000)
-            print("✅ 成功进入 Dashboard")
+            print(f"✅ 成功进入 Dashboard (URL: {page.url})", flush=True)
 
             # 2. 跳转到所有服务列表页
-            print("前往 Services 列表页面...")
+            print("前往 Services 列表页面...", flush=True)
             page.goto("https://vortexa.cloud/services", timeout=30000)
             page.wait_for_load_state("networkidle")
 
-            # 3. 精准点击 Manage 按钮
-            print("点击 Manage 按钮...")
+            # 3. 点击 Manage 按钮进入服务详情页
+            print("点击 Manage 按钮...", flush=True)
             manage_btn = page.locator('a:has-text("Manage"), button:has-text("Manage")').first
             manage_btn.wait_for(state="visible", timeout=15000)
             manage_btn.click()
 
-            # 4. 等待进入服务详情页，直接在当前页面点击
-            print("等待进入服务详情页...")
-            open_panel_btn = page.locator('a:has-text("Open Server Panel"), button:has-text("Open Server Panel")').first
-            open_panel_btn.wait_for(state="visible", timeout=30000)
+            # 等待进入 /services/xxxx 页面
+            page.wait_for_url("**/services/**", timeout=30000)
+            current_url = page.url
+            print(f"✅ 已进入服务详情页: {current_url}", flush=True)
+
+            # 4. 点击进入 Server Panel（结合按钮点击与直接路由跳转双重保障）
+            open_panel_btn = page.get_by_text("Open Server Panel").first
+            if open_panel_btn.is_visible():
+                print("点击 Open Server Panel...", flush=True)
+                open_panel_btn.click()
+                time.sleep(3)
+
+            # 如果点击后 URL 没有变成 /server/xxxx，直接根据服务 ID 拼接 URL 强行跳转
+            if "/server/" not in page.url:
+                match = re.search(r'/services/(\d+)', current_url)
+                if match:
+                    service_id = match.group(1)
+                    target_url = f"https://vortexa.cloud/server/{service_id}"
+                    print(f"🔄 按钮未触发页内路由，直接跳转至控制台: {target_url}", flush=True)
+                    page.goto(target_url, timeout=30000)
+
+            # 5. 等待最终面板渲染（使用不区分大小写的文本匹配 + 侧边栏特征）
+            print("等待加载 Server 控制台面板...", flush=True)
+            page.wait_for_load_state("networkidle", timeout=30000)
             
-            print("点击 Open Server Panel (当前页跳转)...")
-            open_panel_btn.click()
+            # 匹配 Files / Databases / Startup 侧边栏，或者 Power Controls，完全避开大小写坑
+            panel_indicator = page.locator('text=/console|power controls|files|startup/i').first
+            panel_indicator.wait_for(state="visible", timeout=30000)
             
-            # 5. 直接在【当前页】等待最终的 Console 面板出现
-            print("等待加载 Console 面板...")
-            console_tag = page.locator('text="CONSOLE"').first
-            console_tag.wait_for(state="visible", timeout=30000)
-            
-            # 缓冲 5 秒，确保 CPU、内存等图表数据完整渲染完毕
-            time.sleep(5) 
-            print("🎉 成功进入最终服务器面板！")
+            # 缓冲 8 秒，让 WebSocket 实时日志和 CPU/内存图表完整加载出来
+            time.sleep(8) 
+            print(f"🎉 成功进入最终服务器面板！(当前 URL: {page.url})", flush=True)
 
             # 6. 截图保存并发送 TG
             screenshot_path = "vortexa_success.png"
             page.screenshot(path=screenshot_path, full_page=True)
-            send_tg_photo("✅ Vortexa 服务器自动保活成功！详情见截图。", screenshot_path)
+            send_tg_photo(f"✅ Vortexa 服务器自动保活成功！\n当前节点面板: {page.url}", screenshot_path)
 
         except Exception as e:
             error_screenshot = "error.png"
-            page.screenshot(path=error_screenshot, full_page=True)
-            error_msg = f"❌ Vortexa 保活执行失败：\n{str(e)}"
-            print(error_msg)
+            try:
+                page.screenshot(path=error_screenshot, full_page=True)
+            except Exception:
+                pass
+            error_msg = f"❌ Vortexa 保活执行失败 (当前停留 URL: {page.url})：\n{str(e)}"
+            print(error_msg, flush=True)
             send_tg_photo(error_msg, error_screenshot)
             raise e
         finally:
